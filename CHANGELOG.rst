@@ -22,16 +22,14 @@ Other changes:
 
 - Typing: `Field <marshmallow.fields.Field>` is now a generic type with a type argument for the internal value type.
 - `marshmallow.fields.UUID` no longer subclasses `marshmallow.fields.String`.
-- *Backwards-incompatible*: Use `datetime.date.fromisoformat`, `datetime.time.fromisoformat`, and `datetime.datetime.fromisoformat` from the standard library to deserialize dates, times and datetimes (:pr:`2078`).
-- `marshmallow.Schema.load` no longer silently fails to call schema validators when a generator is passed (:issue:`1898`). 
+- `marshmallow.Schema.load` no longer silently fails to call schema validators when a generator is passed (:issue:`1898`).
   The typing of `data` is also updated to be more accurate.
   Thanks :user:`ziplokk1` for reporting.
-
+- *Backwards-incompatible*: Use `datetime.date.fromisoformat`, `datetime.time.fromisoformat`, and `datetime.datetime.fromisoformat` from the standard library to deserialize dates, times and datetimes (:pr:`2078`).
 As a consequence of this change:
   - Time with time offsets are now supported.
   - YYYY-MM-DD is now accepted as a datetime and deserialized as naive 00:00 AM.
   - `from_iso_date`, `from_iso_time` and `from_iso_datetime` are removed from `marshmallow.utils`.
-
 - Remove `isoformat`, `to_iso_time` and `to_iso_datetime` from `marshmallow.utils` (:pr:`2766`).
 - Remove `from_rfc`, and `rfcformat` from `marshmallow.utils` (:pr:`2767`).
 - Remove `is_keyed_tuple` from `marshmallow.utils` (:pr:`2768`).
