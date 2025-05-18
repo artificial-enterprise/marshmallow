@@ -2693,6 +2693,106 @@ class TestDataclassInference:
         
         f_item = CustomResolverSchema._declared_fields["item"]
         assert isinstance(f_item, fields.Nested)
-        assert f_item.nested == "AnotherDataSchema"
+        
+    def test_from_dataclass(self):
+        """Test the new from_dataclass class method."""
+        # Create a schema from a dataclass
+        SimpleSchema = Schema.from_dataclass(SimpleTestData)
+        
+        # Check schema name
+        assert SimpleSchema.__name__ == "SimpleTestDataSchema"
+        
+        # Check fields are correctly inferred
+        assert "id" in SimpleSchema._declared_fields
+        f_id = SimpleSchema._declared_fields["id"]
+        assert isinstance(f_id, fields.Integer)
+        assert f_id.required is True
+        
+        assert "name" in SimpleSchema._declared_fields
+        f_name = SimpleSchema._declared_fields["name"]
+        assert isinstance(f_name, fields.String)
+        assert f_name.required is True
+        
+        assert "value" in SimpleSchema._declared_fields
+        f_value = SimpleSchema._declared_fields["value"]
+        assert isinstance(f_value, fields.Float)
+        assert f_value.required is False
+        assert f_value.allow_none is True
+        
+        # Test serialization and deserialization
+        schema = SimpleSchema()
+        data = {"id": 1, "name": "Test", "value": 10.5}
+        result = schema.load(data)
+        
+        # Check that the result is an instance of the dataclass
+        assert isinstance(result, SimpleTestData)
+        assert result.id == 1
+        assert result.name == "Test"
+        assert result.value == 10.5
+        
+        # Test with custom name
+        CustomNameSchema = Schema.from_dataclass(SimpleTestData, name="MyCustomSchema")
+        assert CustomNameSchema.__name__ == "MyCustomSchema"
+        
+        # Test with auto_instantiate=False
+        DictSchema = Schema.from_dataclass(SimpleTestData, auto_instantiate=False)
+        dict_result = DictSchema().load(data)
+        assert not isinstance(dict_result, SimpleTestData)
+        assert isinstance(dict_result, dict)
+        assert dict_result["id"] == 1
+        
+    def test_from_dataclass_with_nested(self):
+        """Test from_dataclass with nested dataclasses."""
+        # First create a schema for the nested dataclass
+        SimpleSchema = Schema.from_dataclass(SimpleTestData)
+        
+        # Now create a schema for the parent dataclass
+        NestedSchema = Schema.from_dataclass(NestedTestData)
+        
+        # Check that the nested field is correctly inferred
+        assert "data" in NestedSchema._declared_fields
+        f_data = NestedSchema._declared_fields["data"]
+        assert isinstance(f_data, fields.Nested)
+        assert f_data.nested == "SimpleTestDataSchema"
+        
+        # Test serialization and deserialization
+        schema = NestedSchema()
+        data = {
+            "key": "test-key",
+            "data": {
+                "id": 1,
+                "name": "Test",
+                "value": 10.5
+            }
+        }
+        result = schema.load(data)
+        
+        # Check that the result is an instance of the dataclass
+        assert isinstance(result, NestedTestData)
+        assert result.key == "test-key"
+        assert isinstance(result.data, SimpleTestData)
+        assert result.data.id == 1
+        assert result.data.name == "Test"
+        assert result.data.value == 10.5
+        
+    def test_from_dataclass_with_custom_resolver(self):
+        """Test from_dataclass with custom schema name resolver."""
+        def custom_resolver(dc_type):
+            return f"Custom{dc_type.__name__}Schema"
+            
+        class CustomAnotherDataSchema(Schema):
+            value = fields.Integer()
+            
+        # Create schema with custom resolver
+        CustomSchema = Schema.from_dataclass(
+            TestDataclassInference.DCForCustomResolver,
+            schema_name_resolver=custom_resolver
+        )
+        
+        # Check that the nested field uses the custom resolver
+        assert "item" in CustomSchema._declared_fields
+        f_item = CustomSchema._declared_fields["item"]
+        assert isinstance(f_item, fields.Nested)
+        assert f_item.nested == "CustomAnotherDataSchema"
 
 

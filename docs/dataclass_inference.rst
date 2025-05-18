@@ -12,8 +12,31 @@ derive Marshmallow schemas for serialization and validation with minimal boilerp
 Basic Usage
 -----------
 
-To enable dataclass inference, define a dataclass and then, in your Marshmallow schema,
-specify the dataclass in the ``Meta`` class:
+There are two ways to use dataclass inference with Marshmallow:
+
+1. Using the ``from_dataclass`` class method (recommended):
+
+.. code-block:: python
+
+    import dataclasses
+    from marshmallow import Schema
+
+    @dataclasses.dataclass
+    class User:
+        id: int
+        name: str
+        email: str | None = None # Equivalent to typing.Optional[str]
+        is_active: bool = True
+        tags: list[str] = dataclasses.field(default_factory=list)
+
+    # Create a schema directly from the dataclass
+    UserSchema = Schema.from_dataclass(User)
+    
+    # Load data into a User instance
+    user_data = {"id": 1, "name": "John", "email": "john@example.com"}
+    user = UserSchema().load(user_data)  # Returns a User instance
+
+2. Using the ``dataclass`` attribute in the ``Meta`` class:
 
 .. code-block:: python
 
@@ -38,6 +61,9 @@ specify the dataclass in the ``Meta`` class:
     # email: fields.String(required=False, allow_none=True, load_default=None)
     # is_active: fields.Boolean(required=False, load_default=True)
     # tags: fields.List(fields.String(), required=False, load_default=list) # Note: current known issue with load_default
+    
+    # Note: With this approach, schema.load() returns a dict by default
+    # You would need to add a post_load method to create a User instance
 
 How Types are Mapped
 --------------------
@@ -260,3 +286,56 @@ method to achieve this:
 
 This provides a flexible way to leverage dataclasses for defining your data structures
 while using Marshmallow for robust serialization and validation.
+
+Using the ``from_dataclass`` Method
+-----------------------------------
+
+The ``Schema.from_dataclass`` method provides a convenient way to create schemas directly from dataclasses.
+It automatically infers fields from the dataclass type hints and, by default, creates instances of the dataclass
+when deserializing data.
+
+.. code-block:: python
+
+    Schema.from_dataclass(
+        dataclass_type,
+        *,
+        name=None,
+        schema_name_resolver=None,
+        auto_instantiate=True
+    )
+
+Parameters:
+
+- ``dataclass_type``: The dataclass to generate a schema from.
+- ``name``: Optional name for the schema class. If not provided, it will use the dataclass name + "Schema".
+- ``schema_name_resolver``: Optional function to resolve schema names for nested dataclasses.
+- ``auto_instantiate``: If True (default), automatically instantiate the dataclass from loaded data.
+  If False, the schema will return dictionaries when deserializing data.
+
+Example with all parameters:
+
+.. code-block:: python
+
+    @dataclasses.dataclass
+    class Address:
+        street: str
+        city: str
+        
+    @dataclasses.dataclass
+    class Person:
+        name: str
+        address: Address
+        
+    # Custom schema name resolver
+    def my_resolver(dc_type):
+        return f"Custom{dc_type.__name__}Schema"
+        
+    # Create schema with custom options
+    PersonSchema = Schema.from_dataclass(
+        Person,
+        name="PersonDataSchema",
+        schema_name_resolver=my_resolver,
+        auto_instantiate=True
+    )
+    
+    # This will look for a schema named "CustomAddressSchema" for the nested address field

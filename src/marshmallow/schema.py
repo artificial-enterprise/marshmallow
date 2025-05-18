@@ -28,6 +28,7 @@ from marshmallow.decorators import (
     PRE_LOAD,
     VALIDATES,
     VALIDATES_SCHEMA,
+    post_load,
 )
 from marshmallow.error_store import ErrorStore
 from marshmallow.exceptions import SCHEMA, StringNotCollectionError, ValidationError
@@ -622,6 +623,71 @@ class Schema(metaclass=SchemaMeta):
             "GeneratedMeta", (getattr(cls, "Meta", object),), {"register": False}
         )
         return type(name, (cls,), {**fields.copy(), "Meta": Meta})
+
+    @classmethod
+    def from_dataclass(
+        cls,
+        dataclass_type: type,
+        *,
+        name: str | None = None,
+        schema_name_resolver: typing.Callable[[type], str] | None = None,
+        auto_instantiate: bool = True,
+    ) -> type[Schema]:
+        """Generate a `Schema <marshmallow.Schema>` class from a dataclass.
+
+        This method automatically creates a schema with fields inferred from the dataclass type hints.
+
+        .. code-block:: python
+
+            from dataclasses import dataclass
+            from marshmallow import Schema
+
+            @dataclass
+            class Person:
+                name: str
+                age: int
+
+            PersonSchema = Schema.from_dataclass(Person)
+            print(PersonSchema().load({"name": "David", "age": 42}))  # => Person(name='David', age=42)
+
+        :param dataclass_type: The dataclass to generate a schema from.
+        :param name: Optional name for the schema class. If not provided, it will use the dataclass name + "Schema".
+        :param schema_name_resolver: Optional function to resolve schema names for nested dataclasses.
+        :param auto_instantiate: If True, automatically instantiate the dataclass from loaded data.
+            Default is True.
+
+        .. versionadded:: 4.0.0
+        """
+        if not (dataclasses.is_dataclass(dataclass_type) and isinstance(dataclass_type, type)):
+            raise TypeError(f"{dataclass_type.__name__} is not a dataclass type")
+
+        # Generate schema name if not provided
+        if name is None:
+            name = f"{dataclass_type.__name__}Schema"
+
+        # Create Meta class with dataclass
+        meta_attrs = {
+            "register": True,  # Register by default to allow nested schema resolution
+            "dataclass": dataclass_type,
+        }
+        if schema_name_resolver:
+            meta_attrs["dataclass_schema_name_resolver"] = schema_name_resolver
+
+        Meta = type("GeneratedMeta", (getattr(cls, "Meta", object),), meta_attrs)
+        
+        # Create schema class
+        schema_attrs = {"Meta": Meta}
+        
+        # Add post_load method to instantiate dataclass if requested
+        if auto_instantiate:
+            def make_instance(self, data, **kwargs):
+                return dataclass_type(**data)
+            
+            # Use post_load decorator
+            make_instance = post_load(make_instance)
+            schema_attrs["make_instance"] = make_instance
+
+        return type(name, (cls,), schema_attrs)
 
     ##### Override-able methods #####
 
