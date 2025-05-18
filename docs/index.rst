@@ -51,6 +51,7 @@ Usage guide
 
     install
     quickstart
+    dataclass_inference
     nesting
     custom_fields
     extending/index
