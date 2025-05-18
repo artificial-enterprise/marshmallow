@@ -122,12 +122,18 @@ def _generate_field_for_type(field_type, type_mapping, schema_class_name_resolve
             nested_schema_name = schema_class_name_resolver(field_type)
 
         # Try resolved name first, then default convention
-        if nested_schema_name and class_registry.get_class(nested_schema_name):
-            return ma_fields.Nested(nested_schema_name, **kwargs)
+        try:
+            if nested_schema_name and class_registry.get_class(nested_schema_name):
+                return ma_fields.Nested(nested_schema_name, **kwargs)
+        except marshmallow.exceptions.RegistryError:
+            pass  # Continue to try default name
         
         default_name = default_schema_name_resolver(field_type)
-        if default_name != nested_schema_name and class_registry.get_class(default_name): # Check default only if different and resolver failed
-             return ma_fields.Nested(default_name, **kwargs)
+        try:
+            if default_name != nested_schema_name and class_registry.get_class(default_name): # Check default only if different and resolver failed
+                return ma_fields.Nested(default_name, **kwargs)
+        except marshmallow.exceptions.RegistryError:
+            pass  # Continue to fallback
         
         # print(f"Warning: Could not resolve schema for nested dataclass {field_type.__name__}. Tried: {nested_schema_name}, {default_name}")
         return None
@@ -671,6 +677,8 @@ class Schema(metaclass=SchemaMeta):
             "dataclass": dataclass_type,
         }
         if schema_name_resolver:
+            # Store the resolver in both attribute names for compatibility
+            meta_attrs["schema_name_resolver"] = schema_name_resolver
             meta_attrs["dataclass_schema_name_resolver"] = schema_name_resolver
 
         Meta = type("GeneratedMeta", (getattr(cls, "Meta", object),), meta_attrs)
@@ -687,7 +695,18 @@ class Schema(metaclass=SchemaMeta):
             make_instance = post_load(make_instance)
             schema_attrs["make_instance"] = make_instance
 
-        return type(name, (cls,), schema_attrs)
+        # Store the custom resolver in the schema attributes for nested field resolution
+        if schema_name_resolver:
+            schema_attrs["_schema_name_resolver"] = schema_name_resolver
+            
+        # Create the schema class with the original name for proper registration
+        schema_class = type(name, (cls,), schema_attrs)
+        
+        # Also register the schema with its simple name for nested field resolution
+        from marshmallow import class_registry
+        class_registry.register(name, schema_class)
+        
+        return schema_class
 
     ##### Override-able methods #####
 
