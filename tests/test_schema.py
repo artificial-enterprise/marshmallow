@@ -14,6 +14,7 @@ from marshmallow import (
     Schema,
     class_registry,
     fields,
+    missing, # Added missing
     validate,
     validates,
     validates_schema,
@@ -2503,3 +2504,195 @@ def test_set_dict_class(dict_cls):
     result = MySchema().dump({"foo": "bar"})
     assert result == {"foo": "bar"}
     assert isinstance(result, dict_cls)
+
+import dataclasses
+import typing
+# dt, pytest, Schema, fields, ValidationError should be imported already in the file
+
+# Simple dataclass for tests
+@dataclasses.dataclass
+class SimpleTestData:
+    id: int
+    name: str
+    value: typing.Optional[float]
+    is_active: bool = True
+    created_at: typing.Optional[dt.datetime] = dataclasses.field(default=None)
+    tags: typing.List[str] = dataclasses.field(default_factory=list)
+
+@dataclasses.dataclass
+class NestedTestData:
+    key: str
+    data: SimpleTestData # Will try to resolve SimpleTestDataSchema
+
+@dataclasses.dataclass
+class WithMetadata:
+    email: str = dataclasses.field(metadata={'marshmallow_field': fields.Email(required=True)})
+    count: int
+
+# To test nested schema resolution by name
+@dataclasses.dataclass
+class AnotherData:
+    value: int
+
+class AnotherDataSchema(Schema):
+    value = fields.Integer()
+    # Ensure this schema is registered for tests to find it by name.
+    # Marshmallow typically auto-registers named schemas.
+
+@dataclasses.dataclass
+class DataWithNestedRegistered:
+    nested: AnotherData # Will try to resolve AnotherDataSchema
+
+
+class TestDataclassInference:
+    # This dataclass needs to be accessible by the test_custom_schema_name_resolver method
+    # Defining it as a class attribute of TestDataclassInference.
+    @dataclasses.dataclass
+    class DCForCustomResolver:
+        item: AnotherData
+
+    def test_simple_dataclass_inference(self):
+        class SimpleSchema(Schema):
+            class Meta:
+                dataclass = SimpleTestData
+
+        assert "id" in SimpleSchema._declared_fields
+        f_id = SimpleSchema._declared_fields["id"]
+        assert isinstance(f_id, fields.Integer)
+        assert f_id.required is True 
+
+        assert "name" in SimpleSchema._declared_fields
+        f_name = SimpleSchema._declared_fields["name"]
+        assert isinstance(f_name, fields.String)
+        assert f_name.required is True
+
+        assert "value" in SimpleSchema._declared_fields
+        f_value = SimpleSchema._declared_fields["value"]
+        assert isinstance(f_value, fields.Float)
+        assert f_value.required is False
+        assert f_value.allow_none is True
+
+        assert "is_active" in SimpleSchema._declared_fields
+        f_is_active = SimpleSchema._declared_fields["is_active"]
+        assert isinstance(f_is_active, fields.Boolean)
+        assert f_is_active.required is False 
+        assert f_is_active.load_default is True 
+
+        assert "created_at" in SimpleSchema._declared_fields
+        f_created_at = SimpleSchema._declared_fields["created_at"]
+        assert isinstance(f_created_at, fields.DateTime)
+        assert f_created_at.required is False
+        assert f_created_at.allow_none is True
+        assert f_created_at.load_default is None
+
+        assert "tags" in SimpleSchema._declared_fields
+        f_tags = SimpleSchema._declared_fields["tags"]
+        assert isinstance(f_tags, fields.List)
+        assert isinstance(f_tags.inner, fields.String)
+        assert f_tags.required is False
+        assert f_tags.load_default is missing # type: ignore[comparison-overlap]
+
+        schema = SimpleSchema()
+        obj = SimpleTestData(id=1, name="Test", value=1.23, tags=['a', 'b'])
+        data = schema.dump(obj)
+        assert data == {"id": 1, "name": "Test", "value": 1.23, "is_active": True, "created_at": None, "tags": ['a', 'b']}
+        
+        loaded_obj = schema.load({"id": 2, "name": "Loaded", "tags": ["c"]})
+        assert loaded_obj["id"] == 2
+        assert loaded_obj["name"] == "Loaded"
+        assert "value" not in loaded_obj # Optional, required=False, no load_default
+        assert loaded_obj["is_active"] is True # Uses load_default
+        assert loaded_obj["created_at"] is None # Uses load_default
+        assert loaded_obj["tags"] == ["c"]
+
+    def test_field_override_and_addition(self):
+        class OverrideSchema(Schema):
+            name = fields.Email(required=True) 
+            extra_field = fields.Str(dump_default="extra")
+            class Meta:
+                dataclass = SimpleTestData
+        
+        assert isinstance(OverrideSchema._declared_fields["name"], fields.Email)
+        assert OverrideSchema._declared_fields["name"].required is True
+        assert "extra_field" in OverrideSchema._declared_fields
+        assert isinstance(OverrideSchema._declared_fields["id"], fields.Integer)
+
+    def test_nested_dataclass_inference(self):
+        # Define SimpleTestDataSchema locally for this test if it might not be auto-registered
+        # or if specific registration options are needed for the test.
+        class SimpleTestDataSchema(Schema):
+            class Meta:
+                dataclass = SimpleTestData
+                # register = True # Explicitly if needed, usually default for named schemas
+
+        class NestedSchema(Schema):
+            class Meta:
+                dataclass = NestedTestData
+
+        assert "key" in NestedSchema._declared_fields
+        assert isinstance(NestedSchema._declared_fields["key"], fields.String)
+        
+        assert "data" in NestedSchema._declared_fields
+        f_data = NestedSchema._declared_fields["data"]
+        assert isinstance(f_data, fields.Nested)
+        assert f_data.nested == "SimpleTestDataSchema"
+
+        schema = NestedSchema()
+        nested_obj = NestedTestData(key="level1", data=SimpleTestData(id=1, name="Nested Simple", value=None))
+        dumped = schema.dump(nested_obj)
+        assert dumped["key"] == "level1"
+        assert dumped["data"]["id"] == 1
+        assert dumped["data"]["name"] == "Nested Simple"
+
+        loaded = schema.load({"key": "l1", "data": {"id": 10, "name": "n10"}})
+        assert loaded["key"] == "l1"
+        assert loaded["data"]["id"] == 10
+        assert loaded["data"]["name"] == "n10"
+
+    def test_dataclass_with_metadata_field(self):
+        class MetadataSchema(Schema):
+            class Meta:
+                dataclass = WithMetadata
+        
+        assert "email" in MetadataSchema._declared_fields
+        f_email = MetadataSchema._declared_fields["email"]
+        assert isinstance(f_email, fields.Email)
+        assert f_email.required is True
+
+        assert "count" in MetadataSchema._declared_fields
+        f_count = MetadataSchema._declared_fields["count"]
+        assert isinstance(f_count, fields.Integer)
+        assert f_count.required is True
+
+    def test_nested_schema_resolution_by_explicit_name(self):
+        class TestRegisteredNestedSchema(Schema):
+            class Meta:
+                dataclass = DataWithNestedRegistered
+        
+        f_nested = TestRegisteredNestedSchema._declared_fields["nested"]
+        assert isinstance(f_nested, fields.Nested)
+        assert f_nested.nested == "AnotherDataSchema"
+
+        schema = TestRegisteredNestedSchema()
+        obj = DataWithNestedRegistered(nested=AnotherData(value=123))
+        dumped = schema.dump(obj)
+        assert dumped == {"nested": {"value": 123}}
+        loaded = schema.load({"nested": {"value": 456}})
+        assert loaded["nested"]["value"] == 456
+
+    def test_custom_schema_name_resolver(self):
+        def custom_resolver(dc_type):
+            if dc_type is AnotherData:
+                return "AnotherDataSchema"
+            return None
+
+        class CustomResolverSchema(Schema):
+            class Meta:
+                dataclass = TestDataclassInference.DCForCustomResolver 
+                dataclass_schema_name_resolver = custom_resolver
+        
+        f_item = CustomResolverSchema._declared_fields["item"]
+        assert isinstance(f_item, fields.Nested)
+        assert f_item.nested == "AnotherDataSchema"
+
+

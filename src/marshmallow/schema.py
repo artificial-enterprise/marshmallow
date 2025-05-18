@@ -12,6 +12,7 @@ import json
 import operator
 import typing
 import uuid
+import dataclasses
 from abc import ABCMeta
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -84,6 +85,130 @@ def _get_fields_by_mro(klass: SchemaMeta):
         [],
     )
 
+\
+# Placed before SchemaMeta
+def default_schema_name_resolver(dataclass_type):
+    """Default resolver for nested schema names."""
+    return dataclass_type.__name__ + "Schema"
+
+def _generate_field_for_type(field_type, type_mapping, schema_class_name_resolver, dc_field_obj=None, **kwargs):
+    """
+    Generates a Marshmallow Field instance for a given Python type.
+    """
+    if dc_field_obj:
+        if dc_field_obj.default is not dataclasses.MISSING:
+            kwargs['load_default'] = dc_field_obj.default
+        elif dc_field_obj.default_factory is not dataclasses.MISSING:
+            # For default_factory, Marshmallow expects a callable for 'load_default'
+            kwargs['load_default'] = dc_field_obj.default_factory
+            # Determine 'required' status
+            if dc_field_obj.default is not dataclasses.MISSING or \
+               dc_field_obj.default_factory is not dataclasses.MISSING:
+                kwargs.setdefault('required', False)
+            elif is_optional: # is_optional was determined from the original field_type
+                kwargs.setdefault('required', False)
+            else: # No default and not Optional => effectively required for dataclass __init__
+                kwargs.setdefault('required', True)
+
+
+    ma_field_class = type_mapping.get(field_type)
+    if ma_field_class:
+        return ma_field_class(**kwargs)
+
+    if dataclasses.is_dataclass(field_type) and isinstance(field_type, type):
+        nested_schema_name = None
+        if schema_class_name_resolver:
+            nested_schema_name = schema_class_name_resolver(field_type)
+
+        # Try resolved name first, then default convention
+        if nested_schema_name and class_registry.get_class(nested_schema_name):
+            return ma_fields.Nested(nested_schema_name, **kwargs)
+        
+        default_name = default_schema_name_resolver(field_type)
+        if default_name != nested_schema_name and class_registry.get_class(default_name): # Check default only if different and resolver failed
+             return ma_fields.Nested(default_name, **kwargs)
+        
+        # print(f"Warning: Could not resolve schema for nested dataclass {field_type.__name__}. Tried: {nested_schema_name}, {default_name}")
+        return None
+
+    return None
+
+
+def _generate_fields_from_dataclass(dc_type, type_mapping, schema_class_name_resolver):
+    """
+    Generates a list of (field_name, Field_instance) tuples from a dataclass.
+    """
+    inferred_fields = []
+    if not (dataclasses.is_dataclass(dc_type) and isinstance(dc_type, type)): # Ensure dc_type is a dataclass type
+        return inferred_fields
+
+    try:
+        type_hints = typing.get_type_hints(dc_type, include_extras=True)
+    except Exception:
+        return inferred_fields
+
+    dc_fields_map = {f.name: f for f in dataclasses.fields(dc_type)}
+
+    for field_name, field_type_annotation in type_hints.items():
+        field_kwargs = {}
+        ma_field_instance = None
+        
+        current_dc_field_obj = dc_fields_map.get(field_name)
+
+        if current_dc_field_obj and 'marshmallow_field' in current_dc_field_obj.metadata:
+            meta_field = current_dc_field_obj.metadata['marshmallow_field']
+            if isinstance(meta_field, ma_fields.Field):
+                inferred_fields.append((field_name, meta_field))
+                continue
+            elif isinstance(meta_field, type) and issubclass(meta_field, ma_fields.Field):
+                 ma_field_instance = meta_field() # TODO: Pass kwargs from dc_field_obj if appropriate?
+                 if ma_field_instance:
+                    inferred_fields.append((field_name, ma_field_instance))
+                 continue
+
+        origin = typing.get_origin(field_type_annotation)
+        args = typing.get_args(field_type_annotation)
+
+        is_optional = (origin is typing.Union or origin is typing.Optional) and type(None) in args
+        if is_optional:
+            actual_type_for_field_gen = next((arg for arg in args if arg is not type(None)), None)
+            if actual_type_for_field_gen is None: continue # Should not happen for valid Optional[T]
+            field_kwargs['required'] = False
+            field_kwargs['allow_none'] = True
+        else:
+            actual_type_for_field_gen = field_type_annotation
+            if current_dc_field_obj: # Set required based on dataclass defaults only if not optional
+                 if not (current_dc_field_obj.default is not dataclasses.MISSING or \
+                         current_dc_field_obj.default_factory is not dataclasses.MISSING):
+                    field_kwargs.setdefault('required', True) # Default to True if no default value/factory
+                 else:
+                    field_kwargs.setdefault('required', False)
+
+
+        if origin is list or origin is typing.List:
+            if args:
+                inner_type = args[0]
+                # dc_field_obj for list items is None as it's not a direct dataclass field
+                inner_field = _generate_field_for_type(inner_type, type_mapping, schema_class_name_resolver, dc_field_obj=None)
+                if inner_field:
+                    ma_field_instance = ma_fields.List(inner_field, **field_kwargs)
+        elif origin is dict or origin is typing.Dict:
+            if args and len(args) == 2:
+                key_inner_type, value_inner_type = args
+                key_field = _generate_field_for_type(key_inner_type, type_mapping, schema_class_name_resolver)
+                value_field = _generate_field_for_type(value_inner_type, type_mapping, schema_class_name_resolver)
+                if value_field:
+                    ma_field_instance = ma_fields.Dict(keys=key_field, values=value_field, **field_kwargs)
+            elif not args:
+                 ma_field_instance = ma_fields.Dict(**field_kwargs)
+        else: # Handles basic types, nested dataclasses, and Optionals (actual_type_for_field_gen is set correctly)
+            ma_field_instance = _generate_field_for_type(actual_type_for_field_gen, type_mapping, schema_class_name_resolver, dc_field_obj=current_dc_field_obj, **field_kwargs)
+        
+        if ma_field_instance:
+            inferred_fields.append((field_name, ma_field_instance))
+            
+    return inferred_fields
+
 
 class SchemaMeta(ABCMeta):
     """Metaclass for the Schema class. Binds the declared fields to
@@ -146,7 +271,28 @@ class SchemaMeta(ABCMeta):
         :param inherited_fields: Inherited fields.
         :param dict_cls: dict-like class to use for dict output Default to ``dict``.
         """
-        return dict_cls(inherited_fields + cls_fields)
+        # START of new logic for dataclass inference
+        inferred_dc_fields_list = []
+        # klass.opts is available because SchemaMeta.__new__ sets it before calling get_declared_fields
+        if hasattr(klass.opts, 'dataclass') and klass.opts.dataclass:
+            # Resolve the schema name resolver from Meta options, or use default
+            resolver = getattr(klass.opts, 'dataclass_schema_name_resolver', default_schema_name_resolver)
+            
+            # Access TYPE_MAPPING from the schema class (klass) itself.
+            # Schema.TYPE_MAPPING is the base, but subclasses can override it.
+            # klass is the Schema class being constructed.
+            current_type_mapping = klass.TYPE_MAPPING
+
+            inferred_dc_fields_list = _generate_fields_from_dataclass(
+                klass.opts.dataclass,
+                current_type_mapping,
+                resolver
+            )
+        # END of new logic
+
+        # Combine fields: inferred, then inherited, then class-specific.
+        # dict() constructor will ensure later fields override earlier ones if names clash.
+        return dict_cls(inferred_dc_fields_list + inherited_fields + cls_fields)
 
     def __init__(cls, name, bases, attrs):
         super().__init__(name, bases, attrs)
@@ -219,6 +365,7 @@ class SchemaOpts:
         self.unknown = getattr(meta, "unknown", RAISE)
         self.register = getattr(meta, "register", True)
         self.many = getattr(meta, "many", False)
+        self.dataclass = getattr(meta, "dataclass", None)
 
 
 class Schema(metaclass=SchemaMeta):
@@ -654,7 +801,9 @@ class Schema(metaclass=SchemaMeta):
                 d_kwargs = {}
                 # Allow partial loading of nested schemas.
                 if partial_is_collection:
-                    prefix = field_name + "."
+                    prefix = (
+                        attr_name + "."
+                    )  # Use attr_name for partial string matching
                     len_prefix = len(prefix)
                     sub_partial = [
                         f[len_prefix:] for f in partial if f.startswith(prefix)
